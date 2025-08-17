@@ -12,13 +12,11 @@
 		AudioLinesIcon,
 		EllipsisVerticalIcon,
 		Icon,
-		ListMusicIcon,
-		ListVideoIcon,
 		LoaderCircleIcon,
 		PauseIcon,
 		PlayIcon,
-		PlusIcon,
 		SearchIcon,
+		SettingsIcon,
 		SkipBackIcon,
 		SkipForwardIcon,
 		UsersIcon,
@@ -28,7 +26,8 @@
 	import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
 	import * as Select from "$lib/components/ui/select";
 	import type { SearchResult } from "$lib/yt-types";
-	import { onDestroy } from "svelte";
+	import { onDestroy, onMount } from "svelte";
+	import Label from "$lib/components/ui/label/label.svelte";
 
 	let audioel = $state<HTMLAudioElement | null>(null);
 
@@ -92,6 +91,29 @@
 		return member == null ? null : member;
 	});
 
+	let YT_SERVER_URL = $state("");
+	let BACKEND_SERVER_URL = $state("");
+
+	let ytServerUrlInput = $state("");
+	let backendServerUrlInput = $state("");
+
+	let editConnectionPref = $state(false);
+
+	onMount(() => {
+		YT_SERVER_URL = localStorage.getItem("yt-server-url") || "";
+		BACKEND_SERVER_URL = localStorage.getItem("backend-server-url") || "";
+		if (BACKEND_SERVER_URL !== "") backendServerUrlInput = BACKEND_SERVER_URL;
+		else {
+			editConnectionPref = true;
+			toast.warning("Set a websocket backend server URL");
+		}
+		if (YT_SERVER_URL !== "") ytServerUrlInput = YT_SERVER_URL;
+		else {
+			editConnectionPref = true;
+			toast.warning("Set a yt-dlp server URL");
+		}
+	});
+
 	const jamRoomPhrases = [
 		"chilling in",
 		"vibing in",
@@ -147,12 +169,9 @@
 		abortController = new AbortController();
 		try {
 			searchResults = { state: "pending", message: "One moment..." };
-			const response = await fetch(
-				`http://192.168.105.122:5000/search?q=${encodeURIComponent(query)}`,
-				{
-					signal: abortController.signal
-				}
-			);
+			const response = await fetch(`${YT_SERVER_URL}/search?q=${encodeURIComponent(query)}`, {
+				signal: abortController.signal
+			});
 			if (response.ok) {
 				const results = (await response.json()) as SearchDocument[];
 				searchResults = { state: "resolved", data: results };
@@ -191,12 +210,13 @@
 
 	$effect(() => {
 		if (socket != null) return;
-		socket = io("ws://192.168.105.52:3000");
+		socket = io(BACKEND_SERVER_URL);
 		userState = "connecting";
 
 		// connections
 		socket.on("connect", () => {
 			userState = "connected";
+			toast.success("Connected to server via websocket");
 		});
 		socket.on("connect_error", () => {
 			userState = "connection_error";
@@ -276,7 +296,7 @@
 			if (currentRoom.hostSocket === socket.id) {
 				if (playbackState === "loading") {
 					const response = await fetch(
-						`http://192.168.105.122:5000/download?id=${encodeURIComponent(song.id)}`
+						`${YT_SERVER_URL}/download?id=${encodeURIComponent(song.id)}`
 					);
 					if (response.ok) {
 						const { message, filename, url } = (await response.json()) as {
@@ -285,7 +305,7 @@
 							url: string;
 						};
 
-						audioel.src = new URL(`/file/${song.id}.mp3`, "http://192.168.105.122:5000").href;
+						audioel.src = new URL(`/file/${song.id}.mp3`, YT_SERVER_URL).href;
 						audioel.play().then(() => {
 							socket?.emit("playback_state_change", "playing");
 						});
@@ -330,7 +350,7 @@
 			e.preventDefault();
 			showSearchMenu = !showSearchMenu;
 		}
-		if (e.key === " ") {
+		if (e.key === " " && !showSearchMenu) {
 			e.preventDefault();
 			if (currentRoom?.playbackState === "playing") socket?.emit("playback_state_change", "paused");
 			else if (currentRoom?.playbackState === "paused")
@@ -425,21 +445,25 @@
 					</InputOTP.Group>
 				{/snippet}
 			</InputOTP.Root>
-			<Button
-				disabled={joinCode.length < 6 || STATES[userState] !== STATES.connected}
-				onclick={() => {
-					if (socket == null) return;
-					if (STATES[userState] != STATES.connected) {
-						return;
-					}
-					if (joinCode.length < 6) {
-						return;
-					}
-					socket.emit("join_room", joinCode);
-				}}
-			>
-				Join Room
-			</Button>
+			{#if joinCode.length >= 6 && currentRoom == null}
+				<div transition:slide={{ axis: "x" }}>
+					<Button
+						disabled={joinCode.length < 6 || STATES[userState] !== STATES.connected}
+						onclick={() => {
+							if (socket == null) return;
+							if (STATES[userState] != STATES.connected) {
+								return;
+							}
+							if (joinCode.length < 6) {
+								return;
+							}
+							socket.emit("join_room", joinCode);
+						}}
+					>
+						Join
+					</Button>
+				</div>
+			{/if}
 			<Button
 				disabled={STATES[userState] === STATES.creating_room}
 				variant={currentRoom == null ? "default" : "destructive"}
@@ -467,6 +491,75 @@
 					Leave
 				{/if}
 			</Button>
+			{#if currentRoom == null}
+				<div transition:slide>
+					<Dialog.Root
+						bind:open={editConnectionPref}
+						onOpenChangeComplete={() => {
+							ytServerUrlInput = YT_SERVER_URL;
+							backendServerUrlInput = BACKEND_SERVER_URL;
+						}}
+					>
+						<Dialog.Trigger class={buttonVariants({ variant: "secondary", size: "icon" })}>
+							<SettingsIcon />
+						</Dialog.Trigger>
+						<Dialog.Content class="sm:max-w-[425px]">
+							<Dialog.Header>
+								<Dialog.Title>Connection configuration</Dialog.Title>
+								<Dialog.Description>Edit your connection preferences here</Dialog.Description>
+							</Dialog.Header>
+							<div class="space-y-4">
+								<div class="space-y-2">
+									<Label for="backend-server" class="text-right"
+										>Websocket URL to backend server</Label
+									>
+									<Input
+										id="backend-server"
+										bind:value={backendServerUrlInput}
+										placeholder="ws://192.168.105.52:3000"
+									/>
+								</div>
+								<div class="space-y-2">
+									<Label for="yt-server" class="text-right">URL to yt-dlp server</Label>
+									<Input
+										id="yt-server"
+										bind:value={ytServerUrlInput}
+										placeholder="http://192.168.105.52:5000"
+									/>
+								</div>
+							</div>
+							<Dialog.Footer>
+								<Button
+									type="submit"
+									disabled={!URL.canParse(ytServerUrlInput) || !URL.canParse(backendServerUrlInput)}
+									onclick={() => {
+										if (!URL.canParse(ytServerUrlInput) || !URL.canParse(backendServerUrlInput)) {
+											toast.error("Invalid URL(s)");
+											return;
+										}
+										const backendServerUrl = new URL(backendServerUrlInput),
+											ytServerUrl = new URL(ytServerUrlInput);
+										if (
+											backendServerUrl.protocol !== "ws:" &&
+											backendServerUrl.protocol !== "wss:"
+										) {
+											toast.error("Expected backend server URL to be a websocket one.");
+											return;
+										}
+										if (ytServerUrl.protocol !== "http:" && ytServerUrl.protocol !== "https:") {
+											toast.error("Expected backend server URL to be a websocket one.");
+											return;
+										}
+										localStorage.setItem("yt-server-url", ytServerUrlInput);
+										localStorage.setItem("backend-server-url", backendServerUrlInput);
+										window.location.reload();
+									}}>Save & reload</Button
+								>
+							</Dialog.Footer>
+						</Dialog.Content>
+					</Dialog.Root>
+				</div>
+			{/if}
 		</div>
 
 		{#if userState !== "in_room"}
@@ -494,7 +587,7 @@
 			<Command.Item
 				value={details.id}
 				class="flex place-items-center justify-between gap-2"
-				onclick={() => {
+				onclick={(e) => {
 					socket?.emit("add_play_next_and_play", details as QueueItem);
 				}}
 			>
@@ -522,13 +615,19 @@
 				</div>
 
 				<DropdownMenu.Root>
-					<DropdownMenu.Trigger class={buttonVariants({ variant: "ghost", size: "icon" })}>
+					<DropdownMenu.Trigger
+						class={buttonVariants({ variant: "ghost", size: "icon" })}
+						onclick={(e) => e.stopPropagation()}
+					>
 						<EllipsisVerticalIcon />
 					</DropdownMenu.Trigger>
 					<DropdownMenu.Content>
 						<DropdownMenu.Group>
 							<DropdownMenu.Item
-								onclick={() => {
+								onclick={(e) => {
+									e.preventDefault();
+									e.stopImmediatePropagation();
+									e.stopPropagation();
 									if (socket == null) return;
 									socket.emit("add_play_next", details as QueueItem);
 								}}
@@ -536,7 +635,10 @@
 								Play next
 							</DropdownMenu.Item>
 							<DropdownMenu.Item
-								onclick={() => {
+								onclick={(e) => {
+									e.preventDefault();
+									e.stopImmediatePropagation();
+									e.stopPropagation();
 									if (socket == null) return;
 									socket.emit("add_to_queue", details as QueueItem);
 								}}
@@ -584,7 +686,7 @@
 				<div>
 					<div
 						class={clsx("text-sm text-muted-foreground", {
-							"animate-spin": currentRoom.playbackState === "playing"
+							// "animate-spin": currentRoom.playbackState === "playing"
 						})}
 					>
 						{jamRoomPhrases[Math.floor(Math.random() * jamRoomPhrases.length)]}
